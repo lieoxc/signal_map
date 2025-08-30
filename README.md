@@ -129,3 +129,70 @@ fly/
 - 错误信息（如果有）
 
 日志文件保存在 `flight_record_parse.log` 中。
+
+## TODO
+
+### API设计
+
+基于生成的H3聚合数据，可以设计简洁的API接口：
+
+```python
+# 示例：Flask API
+from flask import Flask, jsonify
+import pandas as pd
+import h3
+
+app = Flask(__name__)
+
+@app.route('/api/h3-data')
+def get_h3_data():
+    # 读取H3聚合数据
+    df = pd.read_csv('h3_aggregated_res13.csv')
+    
+    # 转换为JSON格式，添加中心点坐标
+    data = []
+    for _, row in df.iterrows():
+        center = h3.cell_to_latlng(row['h3_index'])
+        data.append({
+            "h3_index": row['h3_index'],
+            "center_lat": center[0],
+            "center_lng": center[1],
+            "avg_sdr_signal": row['avg_sdr_signal'],
+            "max_sdr_signal": row['max_sdr_signal'],
+            "min_sdr_signal": row['min_sdr_signal']
+        })
+    
+    return jsonify({
+        "success": True,
+        "data": data,
+        "metadata": {
+            "resolution": 13,
+            "grid_size_meters": 4.04,
+            "total_grids": len(data)
+        }
+    })
+```
+
+### 数据格式说明
+
+#### 后端返回的JSON格式：
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "h3_index": "8d411c18e08013f",
+      "center_lat": 22.793704684705848,
+      "center_lng": 114.3586296726113,
+      "avg_sdr_signal": 5.0,
+      "max_sdr_signal": 5,
+      "min_sdr_signal": 5
+    }
+  ],
+  "metadata": {
+    "resolution": 13,
+    "grid_size_meters": 4.04,
+    "total_grids": 232
+  }
+}
+```
