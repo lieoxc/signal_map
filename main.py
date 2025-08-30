@@ -1,256 +1,168 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-无人机信号地图分析系统
+飞行记录解析系统
 主程序入口
 """
 
 import argparse
 import logging
-import os
 import sys
 from pathlib import Path
 
-from data_processor import DroneSignalProcessor
-from signal_mapper import SignalMapper
-# Web仪表板功能已移除
+from data_processor import FlightRecordParser
+import pandas as pd
 
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('signal_analysis.log', encoding='utf-8'),
+        logging.FileHandler('flight_record_parse.log', encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
-def create_sample_data():
-    """创建示例数据文件"""
+def parse_flight_record(json_file_path: str, output_csv_path: str = None):
+    """解析飞行记录文件并输出到CSV"""
     try:
-        processor = DroneSignalProcessor()
+        parser = FlightRecordParser()
         
-        # 生成示例数据
-        logger.info("正在生成示例数据...")
-        sample_data = processor.generate_sample_data(
-            center_lat=39.9042,  # 北京天安门
-            center_lon=116.4074,
-            num_points=1000
+        # 解析飞行记录文件
+        logger.info(f"开始解析飞行记录文件: {json_file_path}")
+        df = parser.parse_flight_record_json(json_file_path, output_csv_path)
+        
+        if len(df) > 0:
+            logger.info("✅ 解析完成！")
+            logger.info(f"总记录数: {len(df)}")
+            logger.info(f"时间范围: {df['timestamp'].min()} - {df['timestamp'].max()}")
+            logger.info(f"纬度范围: {df['latitude'].min():.6f} - {df['latitude'].max():.6f}")
+            logger.info(f"经度范围: {df['longitude'].min():.6f} - {df['longitude'].max():.6f}")
+            
+            if 'sdr_signal' in df.columns:
+                sdr_data = df['sdr_signal'].dropna()
+                if len(sdr_data) > 0:
+                    logger.info(f"SDR信号范围: {sdr_data.min():.1f} - {sdr_data.max():.1f}")
+            
+            if output_csv_path:
+                logger.info(f"数据已保存到: {output_csv_path}")
+            else:
+                logger.info("数据已保存到: parsed_flight_data.csv")
+        else:
+            logger.warning("⚠️ 解析完成，但没有找到有效数据")
+            
+    except Exception as e:
+        logger.error(f"❌ 解析失败: {str(e)}")
+        raise
+
+def parse_and_aggregate_to_h3(json_file_path: str, resolution: int = 13, 
+                             output_raw_csv: str = None, output_h3_csv: str = None):
+    """解析飞行记录并聚合到H3网格"""
+    try:
+        parser = FlightRecordParser()
+        
+        # 解析飞行记录并聚合到H3网格
+        logger.info(f"开始解析飞行记录并聚合到H3网格（分辨率{resolution}）")
+        df, h3_df = parser.parse_and_aggregate_to_h3(
+            json_file_path, resolution, output_raw_csv, output_h3_csv
         )
         
-        # 保存为CSV文件
-        output_file = 'sample_drone_data.csv'
-        sample_data.to_csv(output_file, index=False, encoding='utf-8')
-        logger.info(f"示例数据已保存到: {output_file}")
-        
-        # 显示数据统计
-        logger.info(f"数据统计:")
-        logger.info(f"  总记录数: {len(sample_data)}")
-        logger.info(f"  纬度范围: {sample_data['latitude'].min():.4f} - {sample_data['latitude'].max():.4f}")
-        logger.info(f"  经度范围: {sample_data['longitude'].min():.4f} - {sample_data['longitude'].max():.4f}")
-        logger.info(f"  4G信号范围: {sample_data['4g_signal'].min():.1f} - {sample_data['4g_signal'].max():.1f} dBm")
-        logger.info(f"  SDR信号范围: {sample_data['sdr_signal'].min():.1f} - {sample_data['sdr_signal'].max():.1f}")
-        
-        return output_file
-        
-    except Exception as e:
-        logger.error(f"创建示例数据失败: {str(e)}")
-        raise
-
-def process_data_file(data_file, center_lat=None, center_lon=None, radius=10.0, use_hexagonal_grid=False, hex_size=1.0):
-    """处理数据文件并生成地图"""
-    try:
-        processor = DroneSignalProcessor()
-        mapper = SignalMapper()
-        
-        # 加载数据
-        logger.info(f"正在加载数据文件: {data_file}")
-        data = processor.load_flight_data(data_file)
-        
-        # 确定中心点
-        if center_lat is None:
-            center_lat = data['latitude'].mean()
-        if center_lon is None:
-            center_lon = data['longitude'].mean()
-        
-        logger.info(f"分析中心点: ({center_lat:.4f}, {center_lon:.4f})")
-        
-        # 创建输出目录
-        output_dir = Path('output_maps')
-        output_dir.mkdir(exist_ok=True)
-        
-        if use_hexagonal_grid:
-            # 使用正六边形网格处理
-            logger.info(f"使用正六边形网格处理数据 (网格大小: {hex_size}km)")
-            hexagons = processor.process_data_with_hexagonal_grid(
-                data=data,
-                center_lat=center_lat,
-                center_lon=center_lon,
-                radius_km=radius,
-                hex_size_km=hex_size
-            )
+        if len(df) > 0:
+            logger.info("✅ 解析和H3聚合完成！")
+            logger.info(f"原始记录数: {len(df)}")
+            logger.info(f"H3网格数: {len(h3_df)}")
             
-            # 生成正六边形网格地图
-            logger.info("正在生成正六边形网格地图...")
+            if len(h3_df) > 0:
+                logger.info(f"平均每个网格点数: {h3_df['point_count'].mean():.1f}")
+                # 网格面积信息已移除
+                logger.info(f"平均SDR信号: {h3_df['avg_sdr_signal'].mean():.2f}")
             
-            # 4G信号平均值地图
-            map_4g_mean = mapper.create_hexagonal_grid_map(
-                hexagons, '4g_signal_mean', center_lat, center_lon
-            )
-            mapper.save_map(map_4g_mean, output_dir / 'hexagonal_4g_mean_map.html')
-            
-            # 4G信号最大值地图
-            map_4g_max = mapper.create_hexagonal_grid_map(
-                hexagons, '4g_signal_max', center_lat, center_lon
-            )
-            mapper.save_map(map_4g_max, output_dir / 'hexagonal_4g_max_map.html')
-            
-            # 4G信号最小值地图
-            map_4g_min = mapper.create_hexagonal_grid_map(
-                hexagons, '4g_signal_min', center_lat, center_lon
-            )
-            mapper.save_map(map_4g_min, output_dir / 'hexagonal_4g_min_map.html')
-            
-            # SDR信号平均值地图
-            map_sdr_mean = mapper.create_hexagonal_grid_map(
-                hexagons, 'sdr_signal_mean', center_lat, center_lon
-            )
-            mapper.save_map(map_sdr_mean, output_dir / 'hexagonal_sdr_mean_map.html')
-            
-            # 双信号对比地图
-            map_dual = mapper.create_dual_hexagonal_grid_map(
-                hexagons, center_lat, center_lon
-            )
-            mapper.save_map(map_dual, output_dir / 'hexagonal_dual_signal_map.html')
-            
-            # 生成统计图表
-            logger.info("正在生成正六边形网格统计图表...")
-            mapper.create_hexagonal_grid_statistics_plot(hexagons, output_dir / 'hexagonal_grid_statistics.png')
-            
-            # 导出网格数据
-            processor.export_hexagonal_grid_data(hexagons, output_dir / 'hexagonal_grid_data.csv')
-            
+            if output_raw_csv:
+                logger.info(f"原始数据已保存到: {output_raw_csv}")
+            if output_h3_csv:
+                logger.info(f"H3聚合数据已保存到: {output_h3_csv}")
         else:
-            # 使用传统热力图处理
-            # 区域过滤
-            if radius > 0:
-                data = processor.filter_data_by_area(data, center_lat, center_lon, radius)
-                logger.info(f"区域过滤完成，保留{len(data)}条记录")
+            logger.warning("⚠️ 解析完成，但没有找到有效数据")
             
-            # 标准化信号数据
-            data = processor.normalize_signal_data(data)
-            
-            # 生成4G信号地图
-            logger.info("正在生成4G信号地图...")
-            map_4g = mapper.create_signal_heatmap(data, '4g_signal', center_lat, center_lon)
-            mapper.save_map(map_4g, output_dir / '4g_signal_map.html')
-            
-            # 生成SDR信号地图
-            logger.info("正在生成SDR信号地图...")
-            map_sdr = mapper.create_signal_heatmap(data, 'sdr_signal', center_lat, center_lon)
-            mapper.save_map(map_sdr, output_dir / 'sdr_signal_map.html')
-            
-            # 生成双信号对比地图
-            logger.info("正在生成双信号对比地图...")
-            map_dual = mapper.create_dual_signal_map(data, center_lat, center_lon)
-            mapper.save_map(map_dual, output_dir / 'dual_signal_map.html')
-            
-            # 生成统计图表
-            logger.info("正在生成统计图表...")
-            mapper.create_signal_statistics_plot(data, output_dir / 'signal_statistics.png')
-            
-            # 生成等高线图
-            logger.info("正在生成等高线图...")
-            mapper.create_signal_contour_plot(data, '4g_signal', output_dir / '4g_signal_contour.png')
-            mapper.create_signal_contour_plot(data, 'sdr_signal', output_dir / 'sdr_signal_contour.png')
-        
-        logger.info(f"所有地图和图表已保存到: {output_dir}")
-        
-        return output_dir
-        
     except Exception as e:
-        logger.error(f"处理数据文件失败: {str(e)}")
+        logger.error(f"❌ 解析和H3聚合失败: {str(e)}")
         raise
 
-def run_web_dashboard(host='127.0.0.1', port=8050):
-    """启动Web仪表板（功能已移除）"""
-    logger.warning("Web仪表板功能已被移除，请使用命令行功能")
-    raise NotImplementedError("Web仪表板功能已被移除")
+
 
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
-        description='无人机信号地图分析系统',
+        description='飞行记录解析系统',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  # 生成示例数据
-  python main.py --sample
+  # 解析飞行记录文件
+  python main.py --input data/flight_replay_8UUDMAQ00A0202
   
-  # 处理数据文件（传统热力图）
-  python main.py --data sample_drone_data.csv --center-lat 39.9042 --center-lon 116.4074 --radius 5.0 --process
+  # 解析飞行记录文件并指定输出文件
+  python main.py --input data/flight_replay_8UUDMAQ00A0202 --output my_flight_data.csv
   
-  # 使用正六边形网格处理数据
-  python main.py --data sample_drone_data.csv --center-lat 39.9042 --center-lon 116.4074 --radius 5.0 --hexagonal-grid --hex-size 1.0 --process
+  # 解析飞行记录并聚合到H3网格（分辨率13）
+  python main.py --input data/flight_replay_8UUDMAQ00A0202 --h3 --resolution 13
   
-  # Web仪表板功能已移除
-  
-  # 完整流程：生成示例数据并使用正六边形网格处理
-  python main.py --sample --hexagonal-grid --process
+  # 解析飞行记录并聚合到H3网格，指定输出文件
+  python main.py --input data/flight_replay_8UUDMAQ00A0202 --h3 --resolution 13 --output-raw raw_data.csv --output-h3 h3_data.csv
         """
     )
     
-    parser.add_argument('--sample', action='store_true',
-                       help='生成示例数据文件')
+    parser.add_argument('--input', type=str,
+                       help='输入飞行记录JSON文件路径')
     
-    parser.add_argument('--data', type=str,
-                       help='输入数据文件路径 (CSV或JSON格式)')
+    parser.add_argument('--output', type=str,
+                       help='输出CSV文件路径（仅解析模式）')
     
-    parser.add_argument('--center-lat', type=float,
-                       help='机场中心纬度')
+    parser.add_argument('--h3', action='store_true',
+                       help='启用H3网格聚合功能')
     
-    parser.add_argument('--center-lon', type=float,
-                       help='机场中心经度')
+    parser.add_argument('--resolution', type=int, default=13,
+                       help='H3分辨率级别（0-15，默认13）')
     
-    parser.add_argument('--radius', type=float, default=10.0,
-                       help='分析半径 (公里，默认10.0)')
+    parser.add_argument('--output-raw', type=str,
+                       help='原始数据输出CSV文件路径（H3模式）')
     
-    parser.add_argument('--hexagonal-grid', action='store_true',
-                       help='使用正六边形网格处理数据')
+    parser.add_argument('--output-h3', type=str,
+                       help='H3聚合数据输出CSV文件路径（H3模式）')
     
-    parser.add_argument('--hex-size', type=float, default=1.0,
-                       help='正六边形网格边长 (公里，默认1.0)')
-    
-    parser.add_argument('--process', action='store_true',
-                       help='处理数据并生成地图')
-    
-    parser.add_argument('--web', action='store_true',
-                       help='启动Web仪表板')
-    
-    parser.add_argument('--host', type=str, default='127.0.0.1',
-                       help='Web仪表板主机地址 (默认127.0.0.1)')
-    
-    parser.add_argument('--port', type=int, default=8050,
-                       help='Web仪表板端口 (默认8050)')
+
     
     args = parser.parse_args()
     
     try:
-        if args.sample:
-            create_sample_data()
+        # 检查输入文件是否存在
+        if args.input and not Path(args.input).exists():
+            logger.error(f"输入文件不存在: {args.input}")
+            sys.exit(1)
         
-        if args.data and args.process:
-            process_data_file(args.data, args.center_lat, args.center_lon, args.radius, 
-                            args.hexagonal_grid, args.hex_size)
+
         
-        if args.web:
-            run_web_dashboard(args.host, args.port)
+        # 检查H3分辨率范围
+        if args.h3 and (args.resolution < 0 or args.resolution > 15):
+            logger.error(f"H3分辨率必须在0-15之间，当前值: {args.resolution}")
+            sys.exit(1)
         
-        # 如果没有指定任何操作，显示帮助信息
-        if not any([args.sample, args.data, args.web]):
+        # 执行相应的功能
+        if args.h3:
+            # H3聚合模式
+            parse_and_aggregate_to_h3(
+                args.input, 
+                args.resolution, 
+                args.output_raw, 
+                args.output_h3
+            )
+        elif args.input:
+            # 仅解析模式
+            parse_flight_record(args.input, args.output)
+        else:
+            # 显示帮助信息
             parser.print_help()
-            
+        
     except KeyboardInterrupt:
         logger.info("用户中断操作")
     except Exception as e:
